@@ -21,7 +21,7 @@ const Z_MEM_ERROR     = -4
 const Z_BUF_ERROR     = -5
 const Z_VERSION_ERROR = -6
 
-const CHUNK_SIZE = 1024
+const CHUNKSIZE = 4096
 
 @unix_only const libz = "libz"
 @windows_only const libz = "zlib1"
@@ -91,7 +91,7 @@ end
 
 
 function compress(input::Vector{Uint8}, level::Int, gzip::Bool=false, raw::Bool=false, 
-                  output=Array(Uint8,CHUNK_SIZE), append::Bool=false)
+                  chunksize::Int=CHUNKSIZE, output=Array(Uint8,chunksize), append::Bool=false)
     if !(1 <= level <= 9)
         error("Invalid zlib compression level.")
     end
@@ -110,8 +110,8 @@ function compress(input::Vector{Uint8}, level::Int, gzip::Bool=false, raw::Bool=
 
     if append || length(output) == 0
         len = length(output)
-        resize!(output, len+CHUNK_SIZE)
-        strm.avail_out = CHUNK_SIZE
+        resize!(output, len+chunksize)
+        strm.avail_out = chunksize
         strm.next_out = pointer(output, len+1)
     else
         strm.avail_out = length(output)
@@ -133,8 +133,8 @@ function compress(input::Vector{Uint8}, level::Int, gzip::Bool=false, raw::Bool=
     while ret != Z_STREAM_END
         if strm.avail_out == 0
             len = length(output)
-            resize!(output, len+CHUNK_SIZE)
-            strm.avail_out = CHUNK_SIZE
+            resize!(output, len+chunksize)
+            strm.avail_out = chunksize
             strm.next_out = pointer(output, len+1)
         end
 
@@ -161,8 +161,8 @@ compress(input::Vector{Uint8}, args...) = compress(input, 9, args...)
 compress(input::String, args...) = compress(convert(Vector{Uint8}, input), args...)
 
 
-function decompress(input::Vector{Uint8}, raw::Bool=false, 
-                    output=Array(Uint8,CHUNK_SIZE), append::Bool=false)
+function decompress(input::Vector{Uint8}, raw::Bool=false, chunksize::Int=CHUNKSIZE, 
+                    output=Array(Uint8,chunksize), append::Bool=false)
     strm = z_stream()
     ret = ccall((:inflateInit2_, libz),
                 Int32, (Ptr{z_stream}, Cint, Ptr{Uint8}, Int32),
@@ -178,8 +178,8 @@ function decompress(input::Vector{Uint8}, raw::Bool=false,
 
     if append || length(output) == 0
         len = length(output)
-        resize!(output, len+CHUNK_SIZE)
-        strm.avail_out = CHUNK_SIZE
+        resize!(output, len+chunksize)
+        strm.avail_out = chunksize
         strm.next_out = pointer(output, len+1)
     else
         strm.avail_out = length(output)
@@ -191,8 +191,8 @@ function decompress(input::Vector{Uint8}, raw::Bool=false,
     while ret != Z_STREAM_END
         if strm.avail_out == 0
             len = length(output)
-            resize!(output, len+CHUNK_SIZE)
-            strm.avail_out = CHUNK_SIZE
+            resize!(output, len+chunksize)
+            strm.avail_out = chunksize
             strm.next_out = pointer(output, len+1)
         end
 
