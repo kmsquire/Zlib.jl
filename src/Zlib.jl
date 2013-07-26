@@ -161,26 +161,19 @@ compress(input::Vector{Uint8}, args...) = compress(input, 9, args...)
 compress(input::String, args...) = compress(convert(Vector{Uint8}, input), args...)
 
 
-function decompress(input::Vector{Uint8}, raw::Bool=false, chunksize::Int=CHUNKSIZE, 
-                    output=Array(Uint8,chunksize), append::Bool=false)
-    strm = z_stream()
-    ret = ccall((:inflateInit2_, libz),
-                Int32, (Ptr{z_stream}, Cint, Ptr{Uint8}, Int32),
-                &strm, raw? -15 : 47, zlib_version(), sizeof(z_stream))
+function decompress(input::Vector{Uint8}, raw::Bool=false, chunksize::Int=CHUNKSIZE)
 
-    if ret != Z_OK
-        error("Error initializing zlib inflate stream.")
-    end
+    output=Array(Uint8,chunksize)
+
+    strm = init_decompress()
 
     strm.next_in = input
     strm.avail_in = length(input)
     strm.total_in = length(input)
 
-    if append || length(output) == 0
-        len = length(output)
-        resize!(output, len+chunksize)
-        strm.avail_out = chunksize
-        strm.next_out = pointer(output, len+1)
+    if append
+        strm.avail_out = 0
+        #strm.next_out = pointer(output, len+1)  ## initialized below
     else
         strm.avail_out = length(output)
         strm.next_out = output
@@ -213,7 +206,46 @@ function decompress(input::Vector{Uint8}, raw::Bool=false, chunksize::Int=CHUNKS
         error("Error: zlib inflate stream was prematurely freed.")
     end
 
+    println("strm.avail_in: ", strm.avail_in)
+
     output
+end
+
+function init_decompress()
+    strm = z_stream()
+    ret = ccall((:inflateInit2_, libz),
+                Int32, (Ptr{z_stream}, Cint, Ptr{Uint8}, Int32),
+                &strm, raw? -15 : 47, zlib_version(), sizeof(z_stream))
+
+    if ret != Z_OK
+        error("Error initializing zlib inflate stream.")
+    end
+
+    strm
+end
+
+function decompress(strm::z_stream, output::Vector{Uint8}, 
+                    raw::Bool=false, chunksize::Int=CHUNKSIZE)
+
+    ret = Z_OK
+
+    strm.avail_out = length(output)
+    strm.next_out = output
+
+    while ret != Z_STREAM_END && ret != Z_BUF_ERROR
+        ret = ccall((:inflate, libz),
+                    Int32, (Ptr{z_stream}, Int32),
+                    &strm, Z_NO_FLUSH)
+        if ret == Z_DATA_ERROR
+            error("Error: input is not zlib compressed data: $(bytestring(strm.msg))")
+        elseif ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR
+            error("Error in zlib inflate stream ($(ret)).")
+        end
+    end
+
+    resize!(output, length(output)-strm.avail_out)
+
+    strm
 end
 
 decompress(input::String, args...) = decompress(convert(Vector{Uint8}, input), args...)
