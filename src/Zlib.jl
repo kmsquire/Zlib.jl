@@ -21,6 +21,8 @@ const Z_MEM_ERROR     = -4
 const Z_BUF_ERROR     = -5
 const Z_VERSION_ERROR = -6
 
+const CHUNK_SIZE = 1024
+
 @unix_only const libz = "libz"
 @windows_only const libz = "zlib1"
 
@@ -88,7 +90,8 @@ function zlib_version()
 end
 
 
-function compress(input::Vector{Uint8}, level::Integer, gzip::Bool=false, raw::Bool=false, output=Array(Uint8,0))
+function compress(input::Vector{Uint8}, level::Int, gzip::Bool=false, raw::Bool=false, 
+                  output=Array(Uint8,CHUNK_SIZE), append::Bool=false)
     if !(1 <= level <= 9)
         error("Invalid zlib compression level.")
     end
@@ -104,7 +107,17 @@ function compress(input::Vector{Uint8}, level::Integer, gzip::Bool=false, raw::B
 
     strm.next_in = input
     strm.avail_in = length(input)
-    outbuf = Array(Uint8, 1024)
+
+    if append || length(output) == 0
+        len = length(output)
+        resize!(output, len+CHUNK_SIZE)
+        strm.avail_out = CHUNK_SIZE
+        strm.next_out = pointer(output, len+1)
+    else
+        strm.avail_out = length(output)
+        strm.next_out = pointer(output)
+    end
+
     ret = Z_OK
 
     if gzip && false
@@ -118,8 +131,13 @@ function compress(input::Vector{Uint8}, level::Integer, gzip::Bool=false, raw::B
     end
 
     while ret != Z_STREAM_END
-        strm.avail_out = length(outbuf)
-        strm.next_out = outbuf
+        if strm.avail_out == 0
+            len = length(output)
+            resize!(output, len+CHUNK_SIZE)
+            strm.avail_out = CHUNK_SIZE
+            strm.next_out = pointer(output, len+1)
+        end
+
         flush = strm.avail_in == 0 ? Z_FINISH : Z_NO_FLUSH
         ret = ccall((:deflate, libz),
                     Int32, (Ptr{z_stream}, Int32),
@@ -127,11 +145,9 @@ function compress(input::Vector{Uint8}, level::Integer, gzip::Bool=false, raw::B
         if ret != Z_OK && ret != Z_STREAM_END
             error("Error in zlib deflate stream ($(ret)).")
         end
-
-        if length(outbuf) - strm.avail_out > 0
-            append!(output, outbuf[1:(length(outbuf) - strm.avail_out)])
-        end
     end
+
+    resize!(output, length(output)-strm.avail_out)
 
     ret = ccall((:deflateEnd, libz), Int32, (Ptr{z_stream},), &strm)
     if ret == Z_STREAM_ERROR
@@ -141,19 +157,12 @@ function compress(input::Vector{Uint8}, level::Integer, gzip::Bool=false, raw::B
     output
 end
 
-
-function compress(input::String, level::Integer, gzip::Bool=false, raw::Bool=false, output=Array(Uint8,0))
-    compress(convert(Vector{Uint8}, input), level, gzip, raw, output)
-end
+compress(input::Vector{Uint8}, args...) = compress(input, 9, args...)
+compress(input::String, args...) = compress(convert(Vector{Uint8}, input), args...)
 
 
-compress(input::Vector{Uint8}, gzip::Bool=false, raw::Bool=false, output=Array(Uint8,0)) = 
-    compress(input, 9, gzip, raw, output)
-compress(input::String, gzip::Bool=false, raw::Bool=false, output=Array(Uint8,0)) = 
-    compress(input, 9, gzip, raw, output)
-
-
-function decompress(input::Vector{Uint8}, raw::Bool=false, output=Array(Uint8,0))
+function decompress(input::Vector{Uint8}, raw::Bool=false, 
+                    output=Array(Uint8,CHUNK_SIZE), append::Bool=false)
     strm = z_stream()
     ret = ccall((:inflateInit2_, libz),
                 Int32, (Ptr{z_stream}, Cint, Ptr{Uint8}, Int32),
@@ -166,12 +175,27 @@ function decompress(input::Vector{Uint8}, raw::Bool=false, output=Array(Uint8,0)
     strm.next_in = input
     strm.avail_in = length(input)
     strm.total_in = length(input)
-    outbuf = Array(Uint8, 1024)
+
+    if append || length(output) == 0
+        len = length(output)
+        resize!(output, len+CHUNK_SIZE)
+        strm.avail_out = CHUNK_SIZE
+        strm.next_out = pointer(output, len+1)
+    else
+        strm.avail_out = length(output)
+        strm.next_out = output
+    end
+    
     ret = Z_OK
 
     while ret != Z_STREAM_END
-        strm.next_out = outbuf
-        strm.avail_out = length(outbuf)
+        if strm.avail_out == 0
+            len = length(output)
+            resize!(output, len+CHUNK_SIZE)
+            strm.avail_out = CHUNK_SIZE
+            strm.next_out = pointer(output, len+1)
+        end
+
         ret = ccall((:inflate, libz),
                     Int32, (Ptr{z_stream}, Int32),
                     &strm, Z_NO_FLUSH)
@@ -180,11 +204,9 @@ function decompress(input::Vector{Uint8}, raw::Bool=false, output=Array(Uint8,0)
         elseif ret != Z_OK && ret != Z_STREAM_END
             error("Error in zlib inflate stream ($(ret)).")
         end
-
-        if length(outbuf) - strm.avail_out > 0
-            append!(output, outbuf[1:(length(outbuf) - strm.avail_out)])
-        end
     end
+
+    resize!(output, length(output)-strm.avail_out)
 
     ret = ccall((:inflateEnd, libz), Int32, (Ptr{z_stream},), &strm)
     if ret == Z_STREAM_ERROR
@@ -194,9 +216,7 @@ function decompress(input::Vector{Uint8}, raw::Bool=false, output=Array(Uint8,0)
     output
 end
 
-
-decompress(input::String, raw::Bool=false, output=Array(Uint8,0)) = 
-    decompress(convert(Vector{Uint8}, input), raw, output)
+decompress(input::String, args...) = decompress(convert(Vector{Uint8}, input), args...)
 
 
 end # module
