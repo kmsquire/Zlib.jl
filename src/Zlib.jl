@@ -131,12 +131,6 @@ function compress(input::Vector{Uint8}, level::Int, gzip::Bool=false, raw::Bool=
     end
 
     while ret != Z_STREAM_END
-        if strm.avail_out == 0
-            len = length(output)
-            resize!(output, len+chunksize)
-            strm.avail_out = chunksize
-            strm.next_out = pointer(output, len+1)
-        end
 
         flush = strm.avail_in == 0 ? Z_FINISH : Z_NO_FLUSH
         ret = ccall((:deflate, libz),
@@ -211,7 +205,7 @@ function decompress(input::Vector{Uint8}, raw::Bool=false, chunksize::Int=CHUNKS
     output
 end
 
-function init_decompress()
+function init_decompress(raw::Bool=false)
     strm = z_stream()
     ret = ccall((:inflateInit2_, libz),
                 Int32, (Ptr{z_stream}, Cint, Ptr{Uint8}, Int32),
@@ -220,30 +214,6 @@ function init_decompress()
     if ret != Z_OK
         error("Error initializing zlib inflate stream.")
     end
-
-    strm
-end
-
-function decompress(strm::z_stream, output::Vector{Uint8}, 
-                    raw::Bool=false, chunksize::Int=CHUNKSIZE)
-
-    ret = Z_OK
-
-    strm.avail_out = length(output)
-    strm.next_out = output
-
-    while ret != Z_STREAM_END && ret != Z_BUF_ERROR
-        ret = ccall((:inflate, libz),
-                    Int32, (Ptr{z_stream}, Int32),
-                    &strm, Z_NO_FLUSH)
-        if ret == Z_DATA_ERROR
-            error("Error: input is not zlib compressed data: $(bytestring(strm.msg))")
-        elseif ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR
-            error("Error in zlib inflate stream ($(ret)).")
-        end
-    end
-
-    resize!(output, length(output)-strm.avail_out)
 
     strm
 end
