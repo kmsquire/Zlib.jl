@@ -236,12 +236,13 @@ compress(input::String, gzip::Bool=false, raw::Bool=false) = compress(input, 9, 
 type Reader <: IO
     strm::z_stream
     io::IO
+    inbuf::Array{Uint8}
     buf::IOBuffer
     closed::Bool
     bufsize::Int
 
     Reader(strm::z_stream, io::IO, buf::IOBuffer, closed::Bool, bufsize::Int) =
-        (r = new(strm, io, buf, closed, bufsize); finalizer(r, close); r)
+        (r = new(strm, io, Array(Uint8, bufsize), buf, closed, bufsize); finalizer(r, close); r)
 end
 
 function Reader(io::IO, raw::Bool=false; bufsize::Int=4096)
@@ -256,40 +257,51 @@ function Reader(io::IO, raw::Bool=false; bufsize::Int=4096)
     Reader(strm, io, PipeBuffer(), false, bufsize)
 end
 
+function inflateReset(s::z_stream)
+    ret = ccall((:inflateReset, libz),
+                Int32, (Ptr{z_stream},),
+                &s)
+    ret == Z_OK || error("inflateReset failed: $ret")
+end
+
 # Fill up the buffer with at least minlen bytes of uncompressed data,
 # unless we have already reached EOF.
 function fillbuf(r::Reader, minlen::Integer)
     ret = Z_OK
-    while nb_available(r.buf) < minlen && !eof(r.io) && ret != Z_STREAM_END
-        input = read(r.io, Uint8, min(nb_available(r.io), r.bufsize))
-        r.strm.next_in = input
-        r.strm.avail_in = length(input)
-        r.strm.total_in = length(input)
-        #outbuf = Array(Uint8, r.bufsize)
-
+    while nb_available(r.buf) < minlen && ret != Z_STREAM_END && (r.strm.avail_in > 0 || !eof(r.io))
+        if r.strm.avail_in == 0
+            r.inbuf = read(r.io, Uint8, min(nb_available(r.io), r.bufsize))
+            r.strm.next_in = r.inbuf
+            r.strm.avail_in = length(r.inbuf)
+        end
+        
         while true
-            #r.strm.next_out = outbuf
-            #r.strm.avail_out = length(outbuf)
             (r.strm.next_out, r.strm.avail_out) = Base.alloc_request(r.buf, int32(r.bufsize))
             actual_bufsize_out = r.strm.avail_out
             ret = ccall((:inflate, libz),
                         Int32, (Ptr{z_stream}, Int32),
                         &r.strm, Z_NO_FLUSH)
+            Base.notify_filled(r.buf, int64(actual_bufsize_out - r.strm.avail_out), C_NULL, int32(0))
             if ret == Z_DATA_ERROR
                 error("Error: input is not zlib compressed data: $(bytestring(r.strm.msg))")
             elseif ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR
                 error("Error in zlib inflate stream ($(ret)).")
             end
-            if (nbytes = actual_bufsize_out - r.strm.avail_out) > 0
-                #write(r.buf, pointer(outbuf), nbytes)
-                # TODO: the last two parameters are not used by notify_filled()
-                # and can be removed if Julia PR #4484 is merged
-                Base.notify_filled(r.buf, int64(nbytes), C_NULL, int32(0))
-            end
-            if r.strm.avail_out != 0
+                        
+            if r.strm.avail_out != 0 || ret == Z_STREAM_END
                 break
             end
         end
+        
+        if ret == Z_STREAM_END && (r.strm.avail_in > 0 || !eof(r.io))
+            avail_in = r.strm.avail_in
+            ptr_in = length(r.inbuf) - avail_in + 1
+            inflateReset(r.strm)
+            r.strm.next_in = pointer(r.inbuf, ptr_in)
+            r.strm.avail_in = avail_in
+            ret = Z_OK
+        end
+        
     end
     nb_available(r.buf)
 end
