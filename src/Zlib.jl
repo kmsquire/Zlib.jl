@@ -27,7 +27,7 @@ const Z_VERSION_ERROR = -6
 @windows_only const libz = "zlib1"
 
 # The zlib z_stream structure.
-type z_stream
+type ZStream
     next_in::Ptr{Uint8}
     avail_in::Cuint
     total_in::Culong
@@ -47,7 +47,7 @@ type z_stream
     adler::Culong
     reserved::Culong
 
-    function z_stream()
+    function ZStream()
         strm = new()
         strm.next_in   = C_NULL
         strm.avail_in  = 0
@@ -67,7 +67,7 @@ type z_stream
     end
 end
 
-type gz_header
+type GZHeader
     text::Cint          # true if compressed data believed to be text
     time::Culong        # modification time
     xflags::Cint        # extra flags (not used when writing a gzip file)
@@ -82,19 +82,38 @@ type gz_header
     hcrc::Cint          # true if there was or will be a header crc
     done::Cint          # true when done reading gzip header (not used
                         # when writing a gzip file)
-    gz_header() = new(0,0,0,0,0,0,0,0,0,0,0,0,0)
 end
+
+function GZHeader(;extra_max::Integer=0, name_max::Integer=0, comm_max::Integer=0)
+    extra   = extra_max > 0 ? Array(Uint8, extra_max) : C_NULL
+    name    = name_max  > 0 ? Array(Uint8, name_max)  : C_NULL
+    comment = comm_max  > 0 ? Array(Uint8, comm_max)  : C_NULL
+    GZHeader(zero(Cint),
+             zero(Culong),
+             zero(Cint),
+             zero(Cint),
+             extra,
+             zero(Cuint),
+             convert(Cuint, extra_max),
+             name,
+             convert(Cuint, name_max),
+             comment,
+             convert(Cuint, comm_max),
+             zero(Cint),
+             zero(Cint))
+end
+             
 
 function zlib_version()
     ccall((:zlibVersion, libz), Ptr{Uint8}, ())
 end
 
 type Writer <: IO
-    strm::z_stream
+    strm::ZStream
     io::IO
     closed::Bool
 
-    Writer(strm::z_stream, io::IO, closed::Bool) =
+    Writer(strm::ZStream, io::IO, closed::Bool) =
         (w = new(strm, io, closed); finalizer(w, close); w)
 end
 
@@ -103,19 +122,19 @@ function Writer(io::IO, level::Integer, gzip::Bool=false, raw::Bool=false)
         error("Invalid zlib compression level.")
     end
 
-    strm = z_stream()
+    strm = ZStream()
     ret = ccall((:deflateInit2_, libz),
-                Int32, (Ptr{z_stream}, Cint, Cint, Cint, Cint, Cint, Ptr{Uint8}, Int32),
-                &strm, level, 8, raw? -15 : 15+gzip*16, 8, 0, zlib_version(), sizeof(z_stream))
+                Int32, (Ptr{ZStream}, Cint, Cint, Cint, Cint, Cint, Ptr{Uint8}, Int32),
+                &strm, level, 8, raw? -15 : 15+gzip*16, 8, 0, zlib_version(), sizeof(ZStream))
 
     if ret != Z_OK
         error("Error initializing zlib deflate stream.")
     end
 
     if gzip && false
-        hdr = gz_header()
+        hdr = GZHeader()
         ret = ccall((:deflateSetHeader, libz),
-            Cint, (Ptr{z_stream}, Ptr{gz_header}),
+            Cint, (Ptr{ZStream}, Ptr{GZHeader}),
             &strm, &hdr)
         if ret != Z_OK
             error("Error setting gzip stream header.")
@@ -137,7 +156,7 @@ function write(w::Writer, p::Ptr, nb::Integer)
         w.strm.next_out = outbuf
 
         ret = ccall((:deflate, libz),
-                    Int32, (Ptr{z_stream}, Int32),
+                    Int32, (Ptr{ZStream}, Int32),
                     &w.strm, Z_NO_FLUSH)
         if ret != Z_OK
             error("Error in zlib deflate stream ($(ret)).")
@@ -209,7 +228,7 @@ function close(w::Writer)
         end
     end
 
-    ret = ccall((:deflateEnd, libz), Int32, (Ptr{z_stream},), &w.strm)
+    ret = ccall((:deflateEnd, libz), Int32, (Ptr{ZStream},), &w.strm)
     if ret == Z_STREAM_ERROR
         error("Error: zlib deflate stream was prematurely freed.")
     end
@@ -234,32 +253,34 @@ compress(input::String, gzip::Bool=false, raw::Bool=false) = compress(input, 9, 
 
 
 type Reader <: IO
-    strm::z_stream
+    strm::ZStream
     io::IO
     inbuf::Array{Uint8}
     buf::IOBuffer
     closed::Bool
     bufsize::Int
+    raw::Bool
+    gz_header::GZHeader
 
-    Reader(strm::z_stream, io::IO, buf::IOBuffer, closed::Bool, bufsize::Int) =
-        (r = new(strm, io, Array(Uint8, bufsize), buf, closed, bufsize); finalizer(r, close); r)
+    Reader(strm::ZStream, io::IO, buf::IOBuffer, closed::Bool, bufsize::Int, raw::Bool, gz_header::GZHeader) =
+        (r = new(strm, io, Array(Uint8, bufsize), buf, closed, bufsize, raw, gz_header); finalizer(r, close); r)
 end
 
-function Reader(io::IO, raw::Bool=false; bufsize::Int=4096)
-    strm = z_stream()
+function Reader(io::IO, raw::Bool=false; bufsize::Int=4096, gz_header=GZHeader())
+    strm = ZStream()
     ret = ccall((:inflateInit2_, libz),
-                Int32, (Ptr{z_stream}, Cint, Ptr{Uint8}, Int32),
-                &strm, raw? -15 : 47, zlib_version(), sizeof(z_stream))
+                Int32, (Ptr{ZStream}, Cint, Ptr{Uint8}, Int32),
+                &strm, raw? -15 : 47, zlib_version(), sizeof(ZStream))
     if ret != Z_OK
         error("Error initializing zlib inflate stream.")
     end
 
-    Reader(strm, io, PipeBuffer(), false, bufsize)
+    Reader(strm, io, PipeBuffer(), false, bufsize, raw, gz_header)
 end
 
-function inflateReset(s::z_stream)
+function inflateReset(s::ZStream)
     ret = ccall((:inflateReset, libz),
-                Int32, (Ptr{z_stream},),
+                Int32, (Ptr{ZStream},),
                 &s)
     ret == Z_OK || error("inflateReset failed: $ret")
 end
@@ -279,7 +300,7 @@ function fillbuf(r::Reader, minlen::Integer)
             (r.strm.next_out, r.strm.avail_out) = Base.alloc_request(r.buf, int32(r.bufsize))
             actual_bufsize_out = r.strm.avail_out
             ret = ccall((:inflate, libz),
-                        Int32, (Ptr{z_stream}, Int32),
+                        Int32, (Ptr{ZStream}, Int32),
                         &r.strm, Z_NO_FLUSH)
             Base.notify_filled(r.buf, int64(actual_bufsize_out - r.strm.avail_out), C_NULL, int32(0))
             if ret == Z_DATA_ERROR
@@ -293,10 +314,11 @@ function fillbuf(r::Reader, minlen::Integer)
             end
         end
         
-        if ret == Z_STREAM_END && (r.strm.avail_in > 0 || !eof(r.io))
+        if ret == Z_STREAM_END && !r.raw && (r.strm.avail_in > 0 || !eof(r.io))
             avail_in = r.strm.avail_in
             ptr_in = length(r.inbuf) - avail_in + 1
             inflateReset(r.strm)
+            inflateGetHeader(r.strm, r.gz_header)
             r.strm.next_in = pointer(r.inbuf, ptr_in)
             r.strm.avail_in = avail_in
             ret = Z_OK
@@ -304,6 +326,32 @@ function fillbuf(r::Reader, minlen::Integer)
         
     end
     nb_available(r.buf)
+end
+
+function inflateGetHeader(strm::ZStream, header:GZHeader)
+
+    # callable after inflateInit2() or inflateReset()
+    ret = ccall((:inflateGetHeader, libz),
+                Int32, (Ptr{ZStream}, Ptr{GZHeader}),
+                &strm, &header)
+    
+    if ret != Z_OK
+        error("inflateGetHeader: Error getting header ($ret)")
+    end
+
+    # Read the header
+    while true
+        # Z_BLOCK only reads until the end of the header
+        ret = ccall((:inflate, libz),
+                    Int32, (Ptr{ZStream}, Int32),
+                    &strm, Z_BLOCK)
+        if ret != Z_OK
+            error("Error getting gz header ($ret)")
+        end
+        if header.done != 0
+            break
+        end
+    end
 end
 
 function read{T}(r::Reader, a::Array{T})
@@ -354,7 +402,7 @@ function close(r::Reader)
     end
     r.closed = true
 
-    ret = ccall((:inflateEnd, libz), Int32, (Ptr{z_stream},), &r.strm)
+    ret = ccall((:inflateEnd, libz), Int32, (Ptr{ZStream},), &r.strm)
     if ret == Z_STREAM_ERROR
         error("Error: zlib inflate stream was prematurely freed.")
     end
