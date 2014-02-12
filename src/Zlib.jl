@@ -268,13 +268,13 @@ end
 # unless we have already reached EOF.
 function fillbuf(r::Reader, minlen::Integer)
     ret = Z_OK
-    while nb_available(r.buf) < minlen && ret != Z_STREAM_END && (r.strm.avail_in > 0 || !eof(r.io))
+    while nb_available(r.buf) < minlen && ret != Z_STREAM_END && !eof(r.io)
         if r.strm.avail_in == 0
-            r.inbuf = read(r.io, Uint8, min(nb_available(r.io), r.bufsize))
+            readbytes!(r.io, r.strm.inbuf, min(nb_available(r.io), r.bufsize))
             r.strm.next_in = r.inbuf
             r.strm.avail_in = length(r.inbuf)
         end
-        
+
         while true
             (r.strm.next_out, r.strm.avail_out) = Base.alloc_request(r.buf, int32(r.bufsize))
             actual_bufsize_out = r.strm.avail_out
@@ -287,13 +287,13 @@ function fillbuf(r::Reader, minlen::Integer)
             elseif ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR
                 error("Error in zlib inflate stream ($(ret)).")
             end
-                        
+
             if r.strm.avail_out != 0 || ret == Z_STREAM_END
                 break
             end
         end
-        
-        if ret == Z_STREAM_END && (r.strm.avail_in > 0 || !eof(r.io))
+
+        if ret == Z_STREAM_END && !eof(r.io)
             avail_in = r.strm.avail_in
             ptr_in = length(r.inbuf) - avail_in + 1
             inflateReset(r.strm)
@@ -301,7 +301,7 @@ function fillbuf(r::Reader, minlen::Integer)
             r.strm.avail_in = avail_in
             ret = Z_OK
         end
-        
+
     end
     nb_available(r.buf)
 end
