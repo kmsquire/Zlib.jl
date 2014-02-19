@@ -296,10 +296,9 @@ function fillbuf(r::Reader, minlen::Integer)
         if ret == Z_STREAM_END && !eof(r.io)
             avail_in = r.strm.avail_in
             ptr_in = length(r.inbuf) - avail_in + 1
-            inflateReset(r.strm)
+            ret = inflateReset(r.strm)
             r.strm.next_in = pointer(r.inbuf, ptr_in)
             r.strm.avail_in = avail_in
-            ret = Z_OK
         end
 
     end
